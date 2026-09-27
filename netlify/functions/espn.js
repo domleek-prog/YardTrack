@@ -39,15 +39,22 @@ function fail(status, message) {
   return respond(status, { error: message, status });
 }
 
-async function getJSON(url) {
+// ESPN's edge 403s Node's default "node" user agent and has been seen refusing Netlify's
+// servers, so look like a browser and fall back to ESPN's second API host on a 403.
+const HOSTS = ['https://site.api.espn.com', 'https://site.web.api.espn.com'];
+const HEADERS = {
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Language': 'en-GB,en;q=0.9',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36',
+  Referer: 'https://www.espn.com/',
+  Origin: 'https://www.espn.com',
+};
+
+async function fetchOnce(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    // ESPN's edge 403s Node's default "node" user agent, so send our own.
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { Accept: 'application/json', 'User-Agent': 'YardTrack/1.0 (+netlify)' },
-    });
+    const res = await fetch(url, { signal: ctrl.signal, headers: HEADERS });
     if (!res.ok) {
       const err = new Error(`ESPN responded ${res.status}`);
       err.upstream = res.status;
@@ -57,6 +64,19 @@ async function getJSON(url) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getJSON(url) {
+  let lastErr;
+  for (const host of HOSTS) {
+    try {
+      return await fetchOnce(url.replace('https://site.api.espn.com', host));
+    } catch (err) {
+      lastErr = err;
+      if (err.upstream !== 403) throw err;
+    }
+  }
+  throw lastErr;
 }
 
 async function buildPlayers() {

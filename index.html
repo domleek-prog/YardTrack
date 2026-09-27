@@ -478,22 +478,27 @@ async function getJSON(url, ms = 12000) {
 }
 
 async function api(query) {
-  if (!direct) {
-    try {
-      const { res, body } = await getJSON(`${API}?${new URLSearchParams(query)}`);
-      if (res.ok && body !== undefined) return body;
-      // A JSON error came from our function (e.g. bad event) — surface it. Anything else means no proxy.
-      if (body && body.error) throw Object.assign(new Error(body.error), { fromProxy: true });
-      console.warn('Proxy unavailable, switching to direct ESPN');
-      direct = true;
-    } catch (err) {
-      if (err.fromProxy) throw err;
-      if (location.hostname.endsWith('netlify.app')) throw err; // real network trouble on Netlify
-      console.warn('Proxy unreachable, switching to direct ESPN', err);
-      direct = true;
-    }
+  if (direct) return apiDirect(query);
+  let proxyErr;
+  try {
+    const { res, body } = await getJSON(`${API}?${new URLSearchParams(query)}`);
+    if (res.ok && body !== undefined) return body;
+    // A 400/404 from our own function (bad ID) is a real answer, not a proxy outage.
+    if (body?.error && (res.status === 400 || res.status === 404)) throw Object.assign(new Error(body.error), { final: true });
+    proxyErr = new Error(body?.error || `Proxy HTTP ${res.status}`);
+  } catch (err) {
+    if (err.final) throw err;
+    proxyErr = err;
   }
-  return apiDirect(query);
+  // Proxy missing or failing (e.g. ESPN refusing Netlify's servers): try ESPN from the browser.
+  try {
+    const body = await apiDirect(query);
+    console.warn('Proxy failed, using direct ESPN for this session:', proxyErr.message);
+    direct = true;
+    return body;
+  } catch {
+    throw proxyErr;
+  }
 }
 
 async function espn(path) {
@@ -992,7 +997,9 @@ function search(q) {
   for (const p of players) {
     const i = p._k.indexOf(k);
     if (i < 0) continue;
-    const score = i === 0 ? 0 : p._k[i - 1] === ' ' ? 1 : 2;
+    const wordStart = i === 0 || p._k[i - 1] === ' ';
+    const wordEnd = i + k.length === p._k.length || p._k[i + k.length] === ' ';
+    const score = wordStart && wordEnd ? 0 : i === 0 ? 1 : wordStart ? 2 : 3;
     out.push([score, p]);
   }
   out.sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name));
