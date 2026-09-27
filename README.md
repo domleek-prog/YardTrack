@@ -24,4 +24,4 @@ netlify deploy --prod
 - `/?debug=1&event=401872948` points the app at a finished game (ATL @ GB, Week 3 2026). Use the date picker to list other past games, and the `state` dropdown to force pre/live/final.
 
 ## Local dev
-`netlify dev` serves the page and the function together.
+`netlify dev` serves the page and the function together. You can also just open `index.html` in a browser: with no proxy available the app calls ESPN directly (ESPN currently allows CORS on the scoreboard, summary and roster endpoints).

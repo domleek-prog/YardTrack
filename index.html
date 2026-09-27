@@ -460,16 +460,69 @@ function saveGames() {
 }
 
 /* ================= API ================= */
-async function api(query) {
+// Primary path is the Netlify proxy (CDN caching). If it isn't there — the page opened from
+// disk, or a host without functions — fall back to ESPN directly, which currently allows CORS.
+const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
+let direct = location.protocol === 'file:';
+
+async function getJSON(url, ms = 12000) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 12000);
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    const res = await fetch(`${API}?${new URLSearchParams(query)}`, { signal: ctrl.signal });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-    return body;
+    const res = await fetch(url, { signal: ctrl.signal });
+    const body = await res.json().catch(() => undefined);
+    return { res, body };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function api(query) {
+  if (!direct) {
+    try {
+      const { res, body } = await getJSON(`${API}?${new URLSearchParams(query)}`);
+      if (res.ok && body !== undefined) return body;
+      // A JSON error came from our function (e.g. bad event) — surface it. Anything else means no proxy.
+      if (body && body.error) throw Object.assign(new Error(body.error), { fromProxy: true });
+      console.warn('Proxy unavailable, switching to direct ESPN');
+      direct = true;
+    } catch (err) {
+      if (err.fromProxy) throw err;
+      if (location.hostname.endsWith('netlify.app')) throw err; // real network trouble on Netlify
+      console.warn('Proxy unreachable, switching to direct ESPN', err);
+      direct = true;
+    }
+  }
+  return apiDirect(query);
+}
+
+async function espn(path) {
+  const { res, body } = await getJSON(`${ESPN}${path}`);
+  if (!res.ok || body === undefined) throw new Error(`ESPN ${res.status}`);
+  return body;
+}
+
+async function apiDirect(q) {
+  switch (q.route) {
+    case 'scoreboard': return espn(`/scoreboard${q.dates ? `?dates=${q.dates}` : ''}`);
+    case 'summary': return espn(`/summary?event=${encodeURIComponent(q.event)}`);
+    case 'players': {
+      // ESPN's /teams sends no CORS header (rosters do), so use the stable franchise IDs.
+      const teams = [22, 1, 33, 2, 29, 3, 4, 5, 6, 7, 8, 9, 34, 11, 30, 12, 13, 24, 14, 15, 16, 17, 18, 19, 20, 21, 23, 25, 26, 27, 10, 28].map((id) => ({ id }));
+      const rosters = await Promise.allSettled(teams.map((t) => espn(`/teams/${t.id}/roster`)));
+      const out = [], seen = new Set();
+      rosters.forEach((r, i) => {
+        if (r.status !== 'fulfilled') return;
+        for (const group of r.value?.athletes || []) for (const a of group.items || []) {
+          const pos = a?.position?.abbreviation;
+          if (!DEFAULT_STAT[pos] || seen.has(a.id)) continue;
+          seen.add(a.id);
+          out.push({ id: String(a.id), name: a.displayName || a.fullName, position: pos, teamId: String(teams[i].id), teamAbbr: r.value?.team?.abbreviation || teams[i].abbreviation, headshot: a?.headshot?.href || null });
+        }
+      });
+      return out.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    default: throw new Error(`Unknown route ${q.route}`);
   }
 }
 
